@@ -83,6 +83,16 @@ namespace WixSharp
         public SignOutputLevel OutputLevel { get; set; }
 
         /// <summary>
+        /// If there is an error during signing the operation will be retried RetryCount times
+        /// </summary>
+        public int RetryCount { get; set; }
+
+        /// <summary>
+        /// The delay between retry attempts when the signing the operation fails and RetryCount > 0
+        /// </summary>
+        public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+        /// <summary>
         /// Applies digital signature to a file
         /// </summary>
         /// <param name="fileToSign">The file to sign.</param>
@@ -90,7 +100,7 @@ namespace WixSharp
         public virtual int Apply(string fileToSign)
         {
             var retValue = CommonTasks.Tasks.DigitalySign(fileToSign, CertificateId, TimeUrl?.AbsoluteUri, Password,
-                PrepareOptionalArguments(), WellKnownLocations, CertificateStore, OutputLevel, HashAlgorithm);
+                PrepareOptionalArguments(), WellKnownLocations, CertificateStore, OutputLevel, HashAlgorithm, RetryCount, RetryDelay);
 
             Console.WriteLine(retValue != 0
                 ? $"Error: Could not sign the {fileToSign} file."

@@ -29,6 +29,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using System.Xml.XPath;
@@ -170,6 +171,8 @@ namespace WixSharp.CommonTasks
         /// <param name="hashAlgorithm">the hash algorithm to use. SHA1, SHA256, or both. NOTE: MSIs only allow 
         /// a single signature. If SHA1 | SHA256 is requested, the MSI will be signed with SHA1 only.
         /// </param>
+        /// <param name="retryCount">If an error occurs during signing, the operation will be retried retryCount times</param>
+        /// <param name="retryDelay">A delay inserted between retry attempts when signing fails and retryCount > 0</param>
         /// <returns>Exit code of the <c>SignTool.exe</c> process.</returns>
         ///
         /// <example>The following is an example of signing <c>Setup.msi</c> file.
@@ -185,13 +188,15 @@ namespace WixSharp.CommonTasks
         /// </example>
         static public int DigitalySign(string fileToSign, string certificateId, string timeURL, string password,
             string optionalArguments = null, string wellKnownLocations = null, StoreType certificateStore = StoreType.file,
-            SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1)
+            SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1, int retryCount = 0, TimeSpan? retryDelay = null)
         {
             // SHA-1 Sample SignTool line: SignTool.exe /f "C:\MyFolder\MyCert.pfx" /p "PFX Password" /t "http://timestamp.comodoca.com/authenticode" "C:\MyFolder\MyFile.exe"
             // SHA-256 Sample SignTool line (NOT dual signing): SignTool.exe /f "C:\MyFolder\MyCert.pfx" /p "PFX Password" /fd sha256 /tr "http://timestamp.comodoca.com?td=sha256" /td sha256 "C:\MyFolder\MyFile.exe"
             // SHA-256 Sample SignTool line (Dual signing): SignTool.exe /f "C:\MyFolder\MyCert.pfx" /p "PFX Password" /fd sha256 /tr "http://timestamp.comodoca.com?td=sha256" /td sha256 /as "C:\MyFolder\MyFile.exe" 
             bool shouldSignSHA1 = (hashAlgorithm & HashAlgorithmType.sha1) == HashAlgorithmType.sha1;
             bool shouldSignSHA256 = (hashAlgorithm & HashAlgorithmType.sha256) == HashAlgorithmType.sha256;
+            if (retryDelay == null)
+                retryDelay = TimeSpan.FromSeconds(5);
 
             string certPlace;
             switch (certificateStore)
@@ -259,9 +264,8 @@ namespace WixSharp.CommonTasks
             if (password.IsNotEmpty())
                 tool.ConsoleOut = (line) => Compiler.OutputWriteLine(line.Replace(password, "***"));
 
-            var retval = shouldSignSHA1 ? tool.ConsoleRun() : 0;
-            var sha1Signed = retval == 0 || retval == 2;
-            if (!shouldSignSHA256 || !sha1Signed)
+            var retval = shouldSignSHA1 ? RunWithRetry(tool, retryCount, retryDelay.Value) : 0;
+            if (!shouldSignSHA256 || retval != 0)
                 return retval;
 
             if (shouldSignSHA1 && fileToSign.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
@@ -282,7 +286,23 @@ namespace WixSharp.CommonTasks
 
             sha256 += $" \"{fileToSign}\"";
             tool.Arguments = sha256;
-            return tool.ConsoleRun();
+            return RunWithRetry(tool, retryCount, retryDelay.Value);
+        }
+
+        private static int RunWithRetry(ExternalTool tool, int retryCount, TimeSpan retryDelay)
+        {
+            int retval;
+            while (true)
+            {
+                retval = tool.ConsoleRun();
+                if (retval == 0 || --retryCount < 0)
+                    break;
+
+                Console.WriteLine($"SignTool Failed. Retrying in {retryDelay}: {tool.Arguments}");
+                Thread.Sleep(retryDelay);
+            }
+
+            return retval;
         }
 
         /// <summary>
@@ -304,6 +324,8 @@ namespace WixSharp.CommonTasks
         /// <param name="hashAlgorithm">the hash algorithm to use. SHA1, SHA256, or both. NOTE: MSIs only allow 
         /// a single signature. If SHA1 | SHA256 is requested, the MSI will be signed with SHA1 only.
         /// </param>
+        /// <param name="retryCount">If an error occurs during signing, the operation will be retried retryCount times</param>
+        /// <param name="retryDelay">A delay inserted between retry attempts when signing fails and retryCount > 0</param>
         /// <returns>Exit code of the <c>SignTool.exe</c> process.</returns>
         ///
         /// <example>The following is an example of signing <c>SetupBootstrapper.exe</c> file.
@@ -317,13 +339,13 @@ namespace WixSharp.CommonTasks
         /// </code>
         /// </example>
         static public int DigitalySignBootstrapper(string bootstrapperFileToSign, string pfxFile, string timeURL, string password,
-            string optionalArguments = null, string wellKnownLocations = null, bool useCertificateStore = false, SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1)
+            string optionalArguments = null, string wellKnownLocations = null, bool useCertificateStore = false, SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1, int retryCount = 0, TimeSpan? retryDelay = null)
         {
-            var retval = DigitalySignBootstrapperEngine(bootstrapperFileToSign, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore, outputLevel, hashAlgorithm);
+            var retval = DigitalySignBootstrapperEngine(bootstrapperFileToSign, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore, outputLevel, hashAlgorithm, retryCount, retryDelay);
             if (retval != 0)
                 return retval;
 
-            return DigitalySign(bootstrapperFileToSign, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore ? StoreType.commonName : StoreType.file, outputLevel, hashAlgorithm);
+            return DigitalySign(bootstrapperFileToSign, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore ? StoreType.commonName : StoreType.file, outputLevel, hashAlgorithm, retryCount, retryDelay);
         }
 
         /// <summary>
@@ -347,6 +369,8 @@ namespace WixSharp.CommonTasks
         /// <param name="hashAlgorithm">the hash algorithm to use. SHA1, SHA256, or both. NOTE: MSIs only allow 
         /// a single signature. If SHA1 | SHA256 is requested, the MSI will be signed with SHA1 only.
         /// </param>
+        /// <param name="retryCount">If an error occurs during signing, the operation will be retried retryCount times</param>
+        /// <param name="retryDelay">A delay inserted between retry attempts when signing fails and retryCount > 0</param>
         /// <returns>Exit code of the <c>SignTool.exe</c> process.</returns>
         ///
         /// <example>The following is an example of signing <c>SetupBootstrapper.exe</c> file engine.
@@ -360,10 +384,12 @@ namespace WixSharp.CommonTasks
         /// </code>
         /// </example>
         static public int DigitalySignBootstrapperEngine(string bootstrapperFileToSign, string pfxFile, string timeURL, string password,
-            string optionalArguments = null, string wellKnownLocations = null, bool useCertificateStore = false, SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1)
+            string optionalArguments = null, string wellKnownLocations = null, bool useCertificateStore = false, SignOutputLevel outputLevel = SignOutputLevel.Verbose, HashAlgorithmType hashAlgorithm = HashAlgorithmType.sha1, int retryCount = 0, TimeSpan? retryDelay = null)
         {
             var insigniaPath = IO.Path.Combine(Compiler.WixLocation, "insignia.exe");
             string enginePath = IO.Path.GetTempFileName();
+            if (retryDelay == null)
+                retryDelay = TimeSpan.FromSeconds(5);
 
             try
             {
@@ -373,11 +399,11 @@ namespace WixSharp.CommonTasks
                     Arguments = "-ib \"{0}\" -o \"{1}\"".FormatWith(bootstrapperFileToSign, enginePath)
                 };
 
-                var retval = tool.ConsoleRun();
+                var retval = RunWithRetry(tool, retryCount, retryDelay.Value);
                 if (retval != 0)
                     return retval;
 
-                retval = DigitalySign(enginePath, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore ? StoreType.commonName : StoreType.file, outputLevel, hashAlgorithm);
+                retval = DigitalySign(enginePath, pfxFile, timeURL, password, optionalArguments, wellKnownLocations, useCertificateStore ? StoreType.commonName : StoreType.file, outputLevel, hashAlgorithm, retryCount, retryDelay);
                 if (retval != 0)
                     return retval;
 
@@ -387,7 +413,7 @@ namespace WixSharp.CommonTasks
                     Arguments = "-ab \"{1}\" \"{0}\" -o \"{0}\"".FormatWith(bootstrapperFileToSign, enginePath)
                 };
 
-                tool.ConsoleRun();
+                retval = RunWithRetry(tool, retryCount, retryDelay.Value);
                 return retval;
             }
             finally
